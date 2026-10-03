@@ -1,8 +1,6 @@
 package de.milo.alive;
 
 import android.content.Context;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -21,7 +19,6 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.Random;
 
 public class MiloView extends View {
@@ -34,14 +31,14 @@ public class MiloView extends View {
         WAVE, SIT, LIE, SLEEP, SAD, HAPPY
     }
 
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint chipPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Random random = new Random();
     private final GestureDetector gestures;
     private final Speaker speaker;
-    private final EnumMap<Mood, Bitmap> sprites = new EnumMap<>(Mood.class);
     private final ArrayList<Heart> hearts = new ArrayList<>();
 
     private Mood mood = Mood.IDLE;
@@ -79,10 +76,13 @@ public class MiloView extends View {
 
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         setBackgroundColor(Color.rgb(255, 247, 249));
-        loadSprites();
 
         textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
         chipPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
+
+        strokePaint.setStyle(Paint.Style.STROKE);
+        strokePaint.setStrokeCap(Paint.Cap.ROUND);
+        strokePaint.setStrokeJoin(Paint.Join.ROUND);
 
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
             @Override
@@ -125,31 +125,11 @@ public class MiloView extends View {
         handler.post(frameLoop);
     }
 
-    private void loadSprites() {
-        put(Mood.IDLE, R.drawable.milo_idle);
-        put(Mood.BLINK, R.drawable.milo_blink);
-        put(Mood.CURIOUS, R.drawable.milo_curious);
-        put(Mood.SNIFF, R.drawable.milo_sniff);
-        put(Mood.WALK, R.drawable.milo_walk);
-        put(Mood.TROT, R.drawable.milo_trot);
-        put(Mood.HOP, R.drawable.milo_hop);
-        put(Mood.JOY, R.drawable.milo_joy);
-        put(Mood.WAVE, R.drawable.milo_wave);
-        put(Mood.SIT, R.drawable.milo_sit);
-        put(Mood.LIE, R.drawable.milo_lie);
-        put(Mood.SLEEP, R.drawable.milo_sleep);
-        put(Mood.SAD, R.drawable.milo_sad);
-        put(Mood.HAPPY, R.drawable.milo_happy);
-    }
-
-    private void put(Mood mood, int res) {
-        sprites.put(mood, BitmapFactory.decodeResource(getResources(), res));
-    }
-
     public void setPaused(boolean value) {
         paused = value;
         if (!value) {
             lastInteraction = SystemClock.uptimeMillis();
+            nextBlink = lastInteraction + 1800 + random.nextInt(2500);
             invalidate();
         }
     }
@@ -176,7 +156,7 @@ public class MiloView extends View {
             } else if (idleSeconds > 22) {
                 setMood(Mood.SIT, 3000);
             } else if (now > nextBlink) {
-                setMood(Mood.BLINK, 260);
+                setMood(Mood.BLINK, 190);
                 nextBlink = now + 2000 + random.nextInt(5200);
             } else if (now > nextIdleAction) {
                 Mood[] choices = {Mood.CURIOUS, Mood.SNIFF, Mood.WALK, Mood.HOP};
@@ -221,19 +201,9 @@ public class MiloView extends View {
 
         int w = getWidth();
         int h = getHeight();
-        long now = SystemClock.uptimeMillis();
-        float t = now / 1000f;
+        float t = SystemClock.uptimeMillis() / 1000f;
 
-        paint.setShader(new RadialGradient(
-                w * 0.5f,
-                h * 0.39f,
-                w * 0.62f,
-                new int[]{Color.WHITE, Color.rgb(255, 239, 244), Color.rgb(255, 247, 249)},
-                null,
-                Shader.TileMode.CLAMP
-        ));
-        c.drawRect(0, 0, w, h, paint);
-        paint.setShader(null);
+        drawBackground(c, w, h);
 
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setTextSize(w * 0.085f);
@@ -244,33 +214,36 @@ public class MiloView extends View {
         textPaint.setColor(Color.rgb(92, 65, 78));
         c.drawText(statusText(), w / 2f, h * 0.135f, textPaint);
 
-        Bitmap b = sprites.get(mood);
-        if (b == null) {
-            return;
-        }
-
-        float baseW = w * 0.72f;
-        float baseH = baseW * b.getHeight() / b.getWidth();
-        float breathe = 1f + 0.012f * (float) Math.sin(t * 2.15f);
-        float bob = (mood == Mood.WALK || mood == Mood.TROT || mood == Mood.HOP || mood == Mood.JOY)
-                ? (float) Math.sin(t * 11f) * 8f
-                : (float) Math.sin(t * 2.1f) * 3f;
-        float followX = (pointerX - 0.5f) * 18f;
-        float followY = (pointerY - 0.5f) * 10f;
-
+        float followX = (pointerX - 0.5f) * 13f;
+        float followY = (pointerY - 0.5f) * 8f;
         if (!touching) {
             followX *= 0.25f;
             followY *= 0.25f;
         }
 
-        float dw = baseW * breathe;
-        float dh = baseH * breathe;
-        float left = (w - dw) / 2f + followX;
-        float top = h * 0.20f + (baseH - dh) / 2f + bob + followY;
-        RectF dst = new RectF(left, top, left + dw, top + dh);
+        float bob = 2.5f * (float) Math.sin(t * 2.1f);
+        if (mood == Mood.WALK || mood == Mood.TROT) {
+            bob = 7f * (float) Math.sin(t * 10.5f);
+        } else if (mood == Mood.HOP || mood == Mood.JOY) {
+            bob = -20f * Math.abs((float) Math.sin(t * 4.4f));
+        }
 
-        paint.setAlpha(255);
-        c.drawBitmap(b, null, dst, paint);
+        float scale = w / 520f;
+        c.save();
+        c.translate(w / 2f + followX, h * 0.42f + followY + bob);
+        c.scale(scale, scale);
+
+        if (mood == Mood.LIE || mood == Mood.SLEEP) {
+            c.translate(0, 62);
+            c.scale(1.10f, 0.78f);
+            c.rotate(4f);
+        } else if (mood == Mood.SIT) {
+            c.translate(0, 35);
+            c.scale(0.96f, 1.03f);
+        }
+
+        drawMilo(c, t);
+        c.restore();
 
         for (Heart heart : hearts) {
             drawHeart(c, heart.x, heart.y, heart.size, heart.life);
@@ -294,6 +267,201 @@ public class MiloView extends View {
         );
     }
 
+    private void drawBackground(Canvas c, int w, int h) {
+        paint.setShader(new RadialGradient(
+                w * 0.5f,
+                h * 0.38f,
+                w * 0.68f,
+                new int[]{Color.WHITE, Color.rgb(255, 238, 244), Color.rgb(255, 247, 249)},
+                null,
+                Shader.TileMode.CLAMP
+        ));
+        c.drawRect(0, 0, w, h, paint);
+        paint.setShader(null);
+
+        paint.setColor(0x22FFFFFF);
+        for (int i = 0; i < 6; i++) {
+            float x = w * (0.12f + i * 0.16f);
+            float y = h * (0.18f + (i % 2) * 0.06f);
+            c.drawCircle(x, y, 4 + (i % 3) * 2, paint);
+        }
+    }
+
+    private void drawMilo(Canvas c, float t) {
+        int pink = Color.rgb(247, 126, 171);
+        int pinkDark = Color.rgb(214, 74, 126);
+        int pinkLight = Color.rgb(255, 174, 202);
+        int snout = Color.rgb(255, 182, 207);
+        int outline = Color.rgb(170, 65, 105);
+        int eye = Color.rgb(52, 25, 43);
+
+        float breathe = 1f + 0.018f * (float) Math.sin(t * 2.15f);
+        float earWiggle = (mood == Mood.CURIOUS || mood == Mood.SNIFF)
+                ? 8f * (float) Math.sin(t * 5.0f) : 2f * (float) Math.sin(t * 1.7f);
+
+        c.save();
+        c.scale(1f, breathe);
+
+        // Tail behind the body.
+        strokePaint.setStrokeWidth(15f);
+        strokePaint.setColor(pinkDark);
+        Path tail = new Path();
+        tail.moveTo(135, 35);
+        tail.cubicTo(205, 5, 205, 78, 168, 72);
+        c.drawPath(tail, strokePaint);
+        paint.setColor(pinkDark);
+        c.drawCircle(171, 72, 12, paint);
+
+        // Back legs.
+        paint.setColor(pink);
+        c.drawOval(new RectF(-126, 72, -50, 158), paint);
+        c.drawOval(new RectF(52, 72, 128, 158), paint);
+
+        // Body.
+        paint.setColor(pink);
+        c.drawOval(new RectF(-154, -8, 154, 137), paint);
+        paint.setColor(0x18FFFFFF);
+        c.drawOval(new RectF(-105, 8, 95, 102), paint);
+
+        // Front legs.
+        float step = (mood == Mood.WALK || mood == Mood.TROT)
+                ? 15f * (float) Math.sin(t * 10.5f) : 0f;
+        paint.setColor(pink);
+        c.drawRoundRect(new RectF(-110, 75 + step, -48, 166 + step), 28, 28, paint);
+        c.drawRoundRect(new RectF(52, 75 - step, 114, 166 - step), 28, 28, paint);
+
+        // Hooves.
+        paint.setColor(pinkLight);
+        c.drawOval(new RectF(-106, 141 + step, -52, 168 + step), paint);
+        c.drawOval(new RectF(56, 141 - step, 110, 168 - step), paint);
+
+        // Head.
+        paint.setColor(pink);
+        c.drawOval(new RectF(-120, -165, 120, 52), paint);
+
+        // Ears.
+        c.save();
+        c.rotate(-earWiggle, -83, -145);
+        paint.setColor(pink);
+        c.drawCircle(-88, -147, 42, paint);
+        paint.setColor(pinkLight);
+        c.drawCircle(-88, -147, 24, paint);
+        c.restore();
+
+        c.save();
+        c.rotate(earWiggle, 83, -145);
+        paint.setColor(pink);
+        c.drawCircle(88, -147, 42, paint);
+        paint.setColor(pinkLight);
+        c.drawCircle(88, -147, 24, paint);
+        c.restore();
+
+        // Snout.
+        paint.setColor(snout);
+        c.drawOval(new RectF(-91, -73, 91, 29), paint);
+        paint.setColor(Color.rgb(210, 93, 141));
+        c.drawCircle(-38, -27, 7, paint);
+        c.drawCircle(38, -27, 7, paint);
+
+        drawEyes(c, eye, t);
+        drawBrows(c, outline);
+        drawMouth(c, outline);
+
+        // Wave uses one lifted foreleg.
+        if (mood == Mood.WAVE) {
+            c.save();
+            c.rotate(-38f + 8f * (float) Math.sin(t * 8f), 96, 48);
+            paint.setColor(pink);
+            c.drawRoundRect(new RectF(78, 28, 132, 129), 26, 26, paint);
+            paint.setColor(pinkLight);
+            c.drawCircle(105, 28, 31, paint);
+            paint.setColor(pinkDark);
+            strokePaint.setStrokeWidth(4f);
+            strokePaint.setColor(pinkDark);
+            c.drawLine(94, 17, 94, 1, strokePaint);
+            c.drawLine(105, 15, 106, -2, strokePaint);
+            c.drawLine(116, 18, 120, 3, strokePaint);
+            c.restore();
+        }
+
+        // A tiny shine gives the character a toy-like look.
+        paint.setColor(0x45FFFFFF);
+        c.drawOval(new RectF(-72, -143, -20, -105), paint);
+
+        c.restore();
+    }
+
+    private void drawEyes(Canvas c, int eyeColor, float t) {
+        float lookX = (pointerX - 0.5f) * 12f;
+        float lookY = (pointerY - 0.5f) * 7f;
+
+        boolean closed = mood == Mood.BLINK || mood == Mood.SLEEP;
+        if (closed) {
+            strokePaint.setColor(eyeColor);
+            strokePaint.setStrokeWidth(8f);
+            RectF left = new RectF(-75, -118, -19, -72);
+            RectF right = new RectF(19, -118, 75, -72);
+            c.drawArc(left, 15, 150, false, strokePaint);
+            c.drawArc(right, 15, 150, false, strokePaint);
+            return;
+        }
+
+        paint.setColor(Color.WHITE);
+        c.drawOval(new RectF(-78, -126, -18, -57), paint);
+        c.drawOval(new RectF(18, -126, 78, -57), paint);
+
+        paint.setColor(eyeColor);
+        c.drawCircle(-47 + lookX, -91 + lookY, 21, paint);
+        c.drawCircle(47 + lookX, -91 + lookY, 21, paint);
+
+        paint.setColor(Color.rgb(118, 36, 83));
+        c.drawCircle(-47 + lookX, -91 + lookY, 11, paint);
+        c.drawCircle(47 + lookX, -91 + lookY, 11, paint);
+
+        paint.setColor(Color.WHITE);
+        c.drawCircle(-55 + lookX, -100 + lookY, 6, paint);
+        c.drawCircle(39 + lookX, -100 + lookY, 6, paint);
+
+        if (mood == Mood.CURIOUS) {
+            paint.setColor(0x22FFFFFF);
+            c.drawCircle(0, -138, 13 + 2 * (float) Math.sin(t * 3f), paint);
+        }
+    }
+
+    private void drawBrows(Canvas c, int color) {
+        strokePaint.setColor(color);
+        strokePaint.setStrokeWidth(5f);
+
+        if (mood == Mood.SAD) {
+            c.drawLine(-68, -130, -31, -137, strokePaint);
+            c.drawLine(31, -137, 68, -130, strokePaint);
+        } else if (mood == Mood.CURIOUS) {
+            c.drawLine(-67, -140, -32, -147, strokePaint);
+            c.drawLine(32, -133, 67, -128, strokePaint);
+        }
+    }
+
+    private void drawMouth(Canvas c, int outline) {
+        strokePaint.setColor(outline);
+        strokePaint.setStrokeWidth(7f);
+
+        if (mood == Mood.SAD) {
+            c.drawArc(new RectF(-38, 3, 38, 58), 205, 130, false, strokePaint);
+            return;
+        }
+
+        if (mood == Mood.JOY || mood == Mood.HAPPY || mood == Mood.WAVE || mood == Mood.HOP) {
+            paint.setColor(Color.rgb(104, 25, 58));
+            c.drawOval(new RectF(-46, 0, 46, 66), paint);
+            paint.setColor(Color.WHITE);
+            c.drawOval(new RectF(-21, 4, -1, 24), paint);
+            paint.setColor(Color.rgb(255, 113, 157));
+            c.drawOval(new RectF(-21, 39, 25, 63), paint);
+        } else {
+            c.drawArc(new RectF(-40, -1, 40, 42), 25, 130, false, strokePaint);
+        }
+    }
+
     private String statusText() {
         switch (mood) {
             case SLEEP:
@@ -310,6 +478,10 @@ public class MiloView extends View {
                 return "Hallo!";
             case HAPPY:
                 return "Schön, dass du da bist";
+            case SIT:
+                return "Ich setz mich kurz zu dir";
+            case LIE:
+                return "Milo wird langsam müde";
             default:
                 return "Süß. Lebendig. Immer für dich da.";
         }
@@ -420,6 +592,7 @@ public class MiloView extends View {
         for (int i = 0; i < 3; i++) {
             float left = startX + i * (chipW + gap);
             float right = left + chipW;
+
             if (x >= left && x <= right) {
                 if (i == 0) {
                     setMood(Mood.JOY, 1800);
