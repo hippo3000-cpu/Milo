@@ -1,8 +1,11 @@
 package de.milo.alive;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RadialGradient;
@@ -19,6 +22,7 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.Random;
 
 public class MiloView extends View {
@@ -27,45 +31,45 @@ public class MiloView extends View {
     }
 
     private enum Mood {
-        IDLE, BLINK, CURIOUS, SNIFF, WALK, TROT, HOP, JOY,
-        WAVE, SIT, LIE, SLEEP, SAD, HAPPY
+        IDLE, BLINK, CURIOUS, JOY, SLEEP, SAD
     }
 
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint chipPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint softPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Random random = new Random();
     private final GestureDetector gestures;
     private final Speaker speaker;
+    private final EnumMap<Mood, Bitmap> sprites = new EnumMap<>(Mood.class);
     private final ArrayList<Heart> hearts = new ArrayList<>();
+
+    private final RectF miloRect = new RectF();
+    private final RectF syncRect = new RectF();
+    private final RectF offlineRect = new RectF();
+    private final RectF errorRect = new RectF();
 
     private Mood mood = Mood.IDLE;
     private long moodUntil = 0L;
     private long lastInteraction = SystemClock.uptimeMillis();
-    private long nextBlink = lastInteraction + 2200;
-    private long nextIdleAction = lastInteraction + 5000;
-    private float pointerX = 0.5f;
-    private float pointerY = 0.5f;
+    private long nextBlink = lastInteraction + 2600;
+    private long nextCurious = lastInteraction + 8000;
     private boolean touching = false;
     private boolean paused = false;
-    private float energy = 0.92f;
-    private float happiness = 0.82f;
-    private float curiosity = 0.75f;
+    private float pointerX = 0.5f;
+    private float pointerY = 0.5f;
+    private float joy = 0.80f;
+    private float energy = 0.70f;
+    private float curiosity = 0.90f;
 
-    private static class Heart {
-        float x;
-        float y;
-        float vy;
-        float life;
-        float size;
-
-        Heart(float x, float y, float size) {
+    private static final class Heart {
+        float x, y, dx, dy, life, size;
+        Heart(float x, float y, float size, float dx) {
             this.x = x;
             this.y = y;
             this.size = size;
-            this.vy = -1.5f - size / 35f;
+            this.dx = dx;
+            this.dy = -2.2f - size / 20f;
             this.life = 1f;
         }
     }
@@ -73,16 +77,11 @@ public class MiloView extends View {
     public MiloView(Context context, Speaker speaker) {
         super(context);
         this.speaker = speaker;
-
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        setBackgroundColor(Color.rgb(255, 247, 249));
+        setBackgroundColor(Color.rgb(255, 246, 248));
 
-        textPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
-        chipPaint.setTypeface(Typeface.create("sans", Typeface.BOLD));
-
-        strokePaint.setStyle(Paint.Style.STROKE);
-        strokePaint.setStrokeCap(Paint.Cap.ROUND);
-        strokePaint.setStrokeJoin(Paint.Join.ROUND);
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        loadSprites();
 
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
             @Override
@@ -93,31 +92,35 @@ public class MiloView extends View {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
                 interact();
-                setMood(random.nextBoolean() ? Mood.WAVE : Mood.HAPPY, 1500);
-                burstHearts(e.getX(), e.getY(), 7);
-                vibrate(30);
+                if (miloRect.contains(e.getX(), e.getY())) {
+                    setMood(Mood.BLINK, 900);
+                    burstHearts(e.getX(), e.getY(), 6);
+                    vibrate(28);
+                    speaker.say("Hallo!");
+                }
                 return true;
             }
 
             @Override
             public boolean onDoubleTap(MotionEvent e) {
                 interact();
-                setMood(Mood.JOY, 1800);
-                burstHearts(e.getX(), e.getY(), 13);
-                vibrate(60);
-                speaker.say("Juhu!");
+                if (miloRect.contains(e.getX(), e.getY())) {
+                    setMood(Mood.JOY, 1900);
+                    burstHearts(e.getX(), e.getY(), 12);
+                    joy = Math.min(1f, joy + 0.08f);
+                    vibrate(55);
+                    speaker.say("Juhu!");
+                }
                 return true;
             }
 
             @Override
             public void onLongPress(MotionEvent e) {
                 interact();
-                if (mood == Mood.SLEEP) {
-                    setMood(Mood.HAPPY, 1500);
-                    speaker.say("Ich bin wach!");
-                } else {
-                    setMood(Mood.SLEEP, 5000);
+                if (miloRect.contains(e.getX(), e.getY())) {
+                    setMood(Mood.SLEEP, 6000);
                     speaker.say("Nur ein kleines Nickerchen.");
+                    vibrate(22);
                 }
             }
         });
@@ -125,11 +128,19 @@ public class MiloView extends View {
         handler.post(frameLoop);
     }
 
+    private void loadSprites() {
+        sprites.put(Mood.IDLE, BitmapFactory.decodeResource(getResources(), R.drawable.milo_idle));
+        sprites.put(Mood.BLINK, BitmapFactory.decodeResource(getResources(), R.drawable.milo_blink));
+        sprites.put(Mood.CURIOUS, BitmapFactory.decodeResource(getResources(), R.drawable.milo_curious));
+        sprites.put(Mood.JOY, BitmapFactory.decodeResource(getResources(), R.drawable.milo_joy));
+        sprites.put(Mood.SLEEP, BitmapFactory.decodeResource(getResources(), R.drawable.milo_sleep));
+        sprites.put(Mood.SAD, BitmapFactory.decodeResource(getResources(), R.drawable.milo_sad));
+    }
+
     public void setPaused(boolean value) {
         paused = value;
         if (!value) {
             lastInteraction = SystemClock.uptimeMillis();
-            nextBlink = lastInteraction + 1800 + random.nextInt(2500);
             invalidate();
         }
     }
@@ -137,9 +148,7 @@ public class MiloView extends View {
     private final Runnable frameLoop = new Runnable() {
         @Override
         public void run() {
-            if (!paused) {
-                update();
-            }
+            if (!paused) update();
             handler.postDelayed(this, 16);
         }
     };
@@ -149,45 +158,38 @@ public class MiloView extends View {
         float idleSeconds = (now - lastInteraction) / 1000f;
 
         if (!touching && now > moodUntil) {
-            if (idleSeconds > 55) {
+            if (idleSeconds > 45f) {
                 setMood(Mood.SLEEP, 5000);
-            } else if (idleSeconds > 35) {
-                setMood(Mood.LIE, 3500);
-            } else if (idleSeconds > 22) {
-                setMood(Mood.SIT, 3000);
             } else if (now > nextBlink) {
-                setMood(Mood.BLINK, 190);
-                nextBlink = now + 2000 + random.nextInt(5200);
-            } else if (now > nextIdleAction) {
-                Mood[] choices = {Mood.CURIOUS, Mood.SNIFF, Mood.WALK, Mood.HOP};
-                setMood(choices[random.nextInt(choices.length)], 900 + random.nextInt(1000));
-                nextIdleAction = now + 3500 + random.nextInt(5000);
+                setMood(Mood.BLINK, 240);
+                nextBlink = now + 2200 + random.nextInt(4200);
+            } else if (now > nextCurious) {
+                setMood(Mood.CURIOUS, 1600);
+                nextCurious = now + 7000 + random.nextInt(7000);
             } else {
                 mood = Mood.IDLE;
             }
         }
 
-        energy = Math.max(0.2f, Math.min(1f, 0.95f - idleSeconds / 130f));
-        happiness += (0.78f - happiness) * 0.002f;
-        curiosity += (0.72f - curiosity) * 0.002f;
+        energy = Math.max(0.35f, 0.70f - idleSeconds / 180f);
+        joy += (0.80f - joy) * 0.002f;
+        curiosity += (0.90f - curiosity) * 0.0015f;
 
         for (int i = hearts.size() - 1; i >= 0; i--) {
             Heart h = hearts.get(i);
-            h.y += h.vy;
+            h.x += h.dx;
+            h.y += h.dy;
+            h.dy *= 0.985f;
             h.life -= 0.012f;
-            h.x += (float) Math.sin((1 - h.life) * 9 + i) * 0.22f;
-            if (h.life <= 0) {
-                hearts.remove(i);
-            }
+            if (h.life <= 0f) hearts.remove(i);
         }
-
         invalidate();
     }
 
     private void interact() {
         lastInteraction = SystemClock.uptimeMillis();
-        happiness = Math.min(1f, happiness + 0.08f);
         energy = Math.min(1f, energy + 0.03f);
+        joy = Math.min(1f, joy + 0.025f);
     }
 
     private void setMood(Mood value, long durationMs) {
@@ -198,362 +200,350 @@ public class MiloView extends View {
     @Override
     protected void onDraw(Canvas c) {
         super.onDraw(c);
+        final int w = getWidth();
+        final int h = getHeight();
+        if (w <= 0 || h <= 0) return;
 
-        int w = getWidth();
-        int h = getHeight();
-        float t = SystemClock.uptimeMillis() / 1000f;
-
-        drawBackground(c, w, h);
-
-        textPaint.setTextAlign(Paint.Align.CENTER);
-        textPaint.setTextSize(w * 0.085f);
-        textPaint.setColor(Color.rgb(222, 66, 121));
-        c.drawText("Milo", w / 2f, h * 0.09f, textPaint);
-
-        textPaint.setTextSize(w * 0.035f);
-        textPaint.setColor(Color.rgb(92, 65, 78));
-        c.drawText(statusText(), w / 2f, h * 0.135f, textPaint);
-
-        float followX = (pointerX - 0.5f) * 13f;
-        float followY = (pointerY - 0.5f) * 8f;
-        if (!touching) {
-            followX *= 0.25f;
-            followY *= 0.25f;
-        }
-
-        float bob = 2.5f * (float) Math.sin(t * 2.1f);
-        if (mood == Mood.WALK || mood == Mood.TROT) {
-            bob = 7f * (float) Math.sin(t * 10.5f);
-        } else if (mood == Mood.HOP || mood == Mood.JOY) {
-            bob = -20f * Math.abs((float) Math.sin(t * 4.4f));
-        }
-
-        float scale = w / 520f;
-        c.save();
-        c.translate(w / 2f + followX, h * 0.42f + followY + bob);
-        c.scale(scale, scale);
-
-        if (mood == Mood.LIE || mood == Mood.SLEEP) {
-            c.translate(0, 62);
-            c.scale(1.10f, 0.78f);
-            c.rotate(4f);
-        } else if (mood == Mood.SIT) {
-            c.translate(0, 35);
-            c.scale(0.96f, 1.03f);
-        }
-
-        drawMilo(c, t);
-        c.restore();
+        final float t = SystemClock.uptimeMillis() / 1000f;
+        drawBackground(c, w, h, t);
+        drawHeader(c, w, h);
+        drawMilo(c, w, h, t);
+        drawStats(c, w, h);
+        drawCards(c, w, h);
+        drawHint(c, w, h);
+        drawBottomNav(c, w, h);
 
         for (Heart heart : hearts) {
             drawHeart(c, heart.x, heart.y, heart.size, heart.life);
         }
-
-        drawMeter(c, "Freude", happiness, w * 0.10f, h * 0.69f, w * 0.80f);
-        drawMeter(c, "Energie", energy, w * 0.10f, h * 0.735f, w * 0.80f);
-        drawMeter(c, "Neugier", curiosity, w * 0.10f, h * 0.78f, w * 0.80f);
-
-        drawChip(c, 0, "SYNC", "Erfolg");
-        drawChip(c, 1, "OFFLINE", "Verwirrt");
-        drawChip(c, 2, "FEHLER", "Traurig");
-
-        textPaint.setTextSize(w * 0.027f);
-        textPaint.setColor(Color.rgb(112, 86, 98));
-        c.drawText(
-                "Tippen: winken  •  Doppeltippen: freuen  •  Halten: schlafen",
-                w / 2f,
-                h * 0.965f,
-                textPaint
-        );
     }
 
-    private void drawBackground(Canvas c, int w, int h) {
-        paint.setShader(new RadialGradient(
-                w * 0.5f,
-                h * 0.38f,
-                w * 0.68f,
-                new int[]{Color.WHITE, Color.rgb(255, 238, 244), Color.rgb(255, 247, 249)},
-                null,
+    private void drawBackground(Canvas c, int w, int h, float t) {
+        paint.setShader(new LinearGradient(
+                0, 0, 0, h,
+                new int[]{
+                        Color.rgb(255, 247, 249),
+                        Color.rgb(255, 239, 242),
+                        Color.rgb(255, 248, 244)
+                },
+                new float[]{0f, 0.56f, 1f},
                 Shader.TileMode.CLAMP
         ));
         c.drawRect(0, 0, w, h, paint);
         paint.setShader(null);
 
-        paint.setColor(0x22FFFFFF);
-        for (int i = 0; i < 6; i++) {
-            float x = w * (0.12f + i * 0.16f);
-            float y = h * (0.18f + (i % 2) * 0.06f);
-            c.drawCircle(x, y, 4 + (i % 3) * 2, paint);
+        softPaint.setShader(new RadialGradient(
+                w * 0.50f, h * 0.31f, w * 0.48f,
+                new int[]{0x88FFFFFF, 0x36FFD3DF, 0x00FFFFFF},
+                null, Shader.TileMode.CLAMP
+        ));
+        c.drawCircle(w * 0.50f, h * 0.31f, w * 0.50f, softPaint);
+        softPaint.setShader(null);
+
+        // Warm blurred-looking decorative blobs.
+        paint.setColor(0x18F6A2B9);
+        c.drawCircle(w * 0.08f, h * 0.24f, w * 0.14f, paint);
+        c.drawCircle(w * 0.91f, h * 0.22f, w * 0.12f, paint);
+        paint.setColor(0x1CFFD38C);
+        c.drawCircle(w * 0.85f, h * 0.34f, w * 0.10f, paint);
+
+        paint.setColor(0x88FFFFFF);
+        for (int i = 0; i < 7; i++) {
+            float x = w * (0.12f + (i * 0.13f));
+            float y = h * (0.16f + ((i % 3) * 0.04f));
+            float pulse = 2f + 1.2f * (float) Math.sin(t * 2.2f + i);
+            drawSparkle(c, x, y, 5f + pulse);
         }
     }
 
-    private void drawMilo(Canvas c, float t) {
-        int pink = Color.rgb(247, 126, 171);
-        int pinkDark = Color.rgb(214, 74, 126);
-        int pinkLight = Color.rgb(255, 174, 202);
-        int snout = Color.rgb(255, 182, 207);
-        int outline = Color.rgb(170, 65, 105);
-        int eye = Color.rgb(52, 25, 43);
+    private void drawHeader(Canvas c, int w, int h) {
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setTypeface(Typeface.create("sans-serif-rounded", Typeface.BOLD));
+        textPaint.setTextSize(w * 0.105f);
+        textPaint.setColor(Color.rgb(241, 73, 137));
+        textPaint.setShadowLayer(5f, 0f, 4f, 0x448F2352);
+        c.drawText("Milo", w / 2f, h * 0.085f, textPaint);
+        textPaint.clearShadowLayer();
 
-        float breathe = 1f + 0.018f * (float) Math.sin(t * 2.15f);
-        float earWiggle = (mood == Mood.CURIOUS || mood == Mood.SNIFF)
-                ? 8f * (float) Math.sin(t * 5.0f) : 2f * (float) Math.sin(t * 1.7f);
+        // tiny heart on the logo
+        drawHeart(c, w * 0.705f, h * 0.055f, w * 0.025f, 0.95f);
 
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        textPaint.setTextSize(w * 0.036f);
+        textPaint.setColor(Color.rgb(92, 57, 73));
+        c.drawText(statusText(), w / 2f, h * 0.125f, textPaint);
+    }
+
+    private void drawMilo(Canvas c, int w, int h, float t) {
+        Bitmap bitmap = sprites.get(mood);
+        if (bitmap == null) bitmap = sprites.get(Mood.IDLE);
+        if (bitmap == null) return;
+
+        // Smaller than v1: roughly 58% of screen width.
+        float size = Math.min(w * 0.59f, h * 0.325f);
+        float baseY = h * 0.195f;
+        float bob = 2.5f * (float) Math.sin(t * 2.1f);
+        float scale = 1f + 0.007f * (float) Math.sin(t * 2.0f);
+
+        if (mood == Mood.JOY) {
+            bob -= 16f * Math.abs((float) Math.sin(t * 5.4f));
+            scale += 0.012f;
+        } else if (mood == Mood.SLEEP) {
+            bob += 5f;
+            scale -= 0.02f;
+        }
+
+        float followX = (pointerX - 0.5f) * 8f;
+        float followY = (pointerY - 0.5f) * 5f;
+        if (!touching) {
+            followX *= 0.20f;
+            followY *= 0.20f;
+        }
+
+        float sw = size * scale;
+        float sh = size * scale;
+        float left = (w - sw) / 2f + followX;
+        float top = baseY + bob + followY;
+        miloRect.set(left, top, left + sw, top + sh);
+
+        // halo
+        softPaint.setShader(new RadialGradient(
+                w / 2f, top + sh * 0.53f, sw * 0.60f,
+                new int[]{0x42FFFFFF, 0x28FFB5C9, 0x00FFFFFF},
+                null, Shader.TileMode.CLAMP
+        ));
+        c.drawCircle(w / 2f, top + sh * 0.53f, sw * 0.62f, softPaint);
+        softPaint.setShader(null);
+
+        // subtle shadow
+        paint.setColor(0x1A7E3A55);
+        paint.setShadowLayer(22f, 0f, 11f, 0x337E3A55);
+        RectF shadow = new RectF(left + 10, top + 14, left + sw - 10, top + sh - 5);
+        c.drawRoundRect(shadow, 38f, 38f, paint);
+        paint.clearShadowLayer();
+
+        Path clip = new Path();
+        clip.addRoundRect(miloRect, 40f, 40f, Path.Direction.CW);
         c.save();
-        c.scale(1f, breathe);
-
-        // Tail behind the body.
-        strokePaint.setStrokeWidth(15f);
-        strokePaint.setColor(pinkDark);
-        Path tail = new Path();
-        tail.moveTo(135, 35);
-        tail.cubicTo(205, 5, 205, 78, 168, 72);
-        c.drawPath(tail, strokePaint);
-        paint.setColor(pinkDark);
-        c.drawCircle(171, 72, 12, paint);
-
-        // Back legs.
-        paint.setColor(pink);
-        c.drawOval(new RectF(-126, 72, -50, 158), paint);
-        c.drawOval(new RectF(52, 72, 128, 158), paint);
-
-        // Body.
-        paint.setColor(pink);
-        c.drawOval(new RectF(-154, -8, 154, 137), paint);
-        paint.setColor(0x18FFFFFF);
-        c.drawOval(new RectF(-105, 8, 95, 102), paint);
-
-        // Front legs.
-        float step = (mood == Mood.WALK || mood == Mood.TROT)
-                ? 15f * (float) Math.sin(t * 10.5f) : 0f;
-        paint.setColor(pink);
-        c.drawRoundRect(new RectF(-110, 75 + step, -48, 166 + step), 28, 28, paint);
-        c.drawRoundRect(new RectF(52, 75 - step, 114, 166 - step), 28, 28, paint);
-
-        // Hooves.
-        paint.setColor(pinkLight);
-        c.drawOval(new RectF(-106, 141 + step, -52, 168 + step), paint);
-        c.drawOval(new RectF(56, 141 - step, 110, 168 - step), paint);
-
-        // Head.
-        paint.setColor(pink);
-        c.drawOval(new RectF(-120, -165, 120, 52), paint);
-
-        // Ears.
-        c.save();
-        c.rotate(-earWiggle, -83, -145);
-        paint.setColor(pink);
-        c.drawCircle(-88, -147, 42, paint);
-        paint.setColor(pinkLight);
-        c.drawCircle(-88, -147, 24, paint);
+        c.clipPath(clip);
+        paint.setAlpha(255);
+        c.drawBitmap(bitmap, null, miloRect, paint);
         c.restore();
 
-        c.save();
-        c.rotate(earWiggle, 83, -145);
-        paint.setColor(pink);
-        c.drawCircle(88, -147, 42, paint);
-        paint.setColor(pinkLight);
-        c.drawCircle(88, -147, 24, paint);
-        c.restore();
+        // soft border highlight
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
+        paint.setColor(0x78FFFFFF);
+        c.drawRoundRect(miloRect, 40f, 40f, paint);
+        paint.setStyle(Paint.Style.FILL);
 
-        // Snout.
-        paint.setColor(snout);
-        c.drawOval(new RectF(-91, -73, 91, 29), paint);
-        paint.setColor(Color.rgb(210, 93, 141));
-        c.drawCircle(-38, -27, 7, paint);
-        c.drawCircle(38, -27, 7, paint);
-
-        drawEyes(c, eye, t);
-        drawBrows(c, outline);
-        drawMouth(c, outline);
-
-        // Wave uses one lifted foreleg.
-        if (mood == Mood.WAVE) {
-            c.save();
-            c.rotate(-38f + 8f * (float) Math.sin(t * 8f), 96, 48);
-            paint.setColor(pink);
-            c.drawRoundRect(new RectF(78, 28, 132, 129), 26, 26, paint);
-            paint.setColor(pinkLight);
-            c.drawCircle(105, 28, 31, paint);
-            paint.setColor(pinkDark);
-            strokePaint.setStrokeWidth(4f);
-            strokePaint.setColor(pinkDark);
-            c.drawLine(94, 17, 94, 1, strokePaint);
-            c.drawLine(105, 15, 106, -2, strokePaint);
-            c.drawLine(116, 18, 120, 3, strokePaint);
-            c.restore();
-        }
-
-        // A tiny shine gives the character a toy-like look.
-        paint.setColor(0x45FFFFFF);
-        c.drawOval(new RectF(-72, -143, -20, -105), paint);
-
-        c.restore();
-    }
-
-    private void drawEyes(Canvas c, int eyeColor, float t) {
-        float lookX = (pointerX - 0.5f) * 12f;
-        float lookY = (pointerY - 0.5f) * 7f;
-
-        boolean closed = mood == Mood.BLINK || mood == Mood.SLEEP;
-        if (closed) {
-            strokePaint.setColor(eyeColor);
-            strokePaint.setStrokeWidth(8f);
-            RectF left = new RectF(-75, -118, -19, -72);
-            RectF right = new RectF(19, -118, 75, -72);
-            c.drawArc(left, 15, 150, false, strokePaint);
-            c.drawArc(right, 15, 150, false, strokePaint);
-            return;
-        }
-
-        paint.setColor(Color.WHITE);
-        c.drawOval(new RectF(-78, -126, -18, -57), paint);
-        c.drawOval(new RectF(18, -126, 78, -57), paint);
-
-        paint.setColor(eyeColor);
-        c.drawCircle(-47 + lookX, -91 + lookY, 21, paint);
-        c.drawCircle(47 + lookX, -91 + lookY, 21, paint);
-
-        paint.setColor(Color.rgb(118, 36, 83));
-        c.drawCircle(-47 + lookX, -91 + lookY, 11, paint);
-        c.drawCircle(47 + lookX, -91 + lookY, 11, paint);
-
-        paint.setColor(Color.WHITE);
-        c.drawCircle(-55 + lookX, -100 + lookY, 6, paint);
-        c.drawCircle(39 + lookX, -100 + lookY, 6, paint);
-
-        if (mood == Mood.CURIOUS) {
-            paint.setColor(0x22FFFFFF);
-            c.drawCircle(0, -138, 13 + 2 * (float) Math.sin(t * 3f), paint);
+        if (mood == Mood.JOY) {
+            drawHeart(c, left - 10, top + sh * 0.28f, w * 0.028f, 0.9f);
+            drawHeart(c, left + sw + 14, top + sh * 0.40f, w * 0.022f, 0.8f);
         }
     }
 
-    private void drawBrows(Canvas c, int color) {
-        strokePaint.setColor(color);
-        strokePaint.setStrokeWidth(5f);
-
-        if (mood == Mood.SAD) {
-            c.drawLine(-68, -130, -31, -137, strokePaint);
-            c.drawLine(31, -137, 68, -130, strokePaint);
-        } else if (mood == Mood.CURIOUS) {
-            c.drawLine(-67, -140, -32, -147, strokePaint);
-            c.drawLine(32, -133, 67, -128, strokePaint);
-        }
+    private void drawStats(Canvas c, int w, int h) {
+        float startY = h * 0.555f;
+        float gap = h * 0.055f;
+        drawStat(c, w, startY, "Freude", "♥", joy, Color.rgb(242, 70, 132));
+        drawStat(c, w, startY + gap, "Energie", "⚡", energy, Color.rgb(244, 167, 45));
+        drawStat(c, w, startY + gap * 2f, "Neugier", "●", curiosity, Color.rgb(158, 100, 235));
     }
 
-    private void drawMouth(Canvas c, int outline) {
-        strokePaint.setColor(outline);
-        strokePaint.setStrokeWidth(7f);
+    private void drawStat(Canvas c, int w, float y, String label, String icon, float value, int color) {
+        float left = w * 0.105f;
+        float right = w * 0.895f;
+        float circleX = left + w * 0.018f;
 
-        if (mood == Mood.SAD) {
-            c.drawArc(new RectF(-38, 3, 38, 58), 205, 130, false, strokePaint);
-            return;
+        paint.setColor(0xDFFFFFFF);
+        c.drawCircle(circleX, y, w * 0.032f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
+        paint.setColor(0xFFFFFFFF);
+        c.drawCircle(circleX, y, w * 0.032f, paint);
+        paint.setStyle(Paint.Style.FILL);
+
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        textPaint.setTextSize(w * 0.027f);
+        textPaint.setColor(color);
+        c.drawText(icon, circleX, y + w * 0.010f, textPaint);
+
+        float textX = left + w * 0.075f;
+        textPaint.setTextAlign(Paint.Align.LEFT);
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        textPaint.setTextSize(w * 0.031f);
+        textPaint.setColor(Color.rgb(77, 42, 57));
+        c.drawText(label, textX, y - 5f, textPaint);
+
+        textPaint.setTextAlign(Paint.Align.RIGHT);
+        c.drawText(Math.round(value * 100) + "%", right, y - 5f, textPaint);
+
+        float barLeft = textX;
+        float barTop = y + w * 0.018f;
+        float barRight = right;
+        float barH = Math.max(8f, w * 0.010f);
+
+        paint.setColor(0x42C98A9E);
+        c.drawRoundRect(barLeft, barTop, barRight, barTop + barH, barH, barH, paint);
+
+        paint.setColor(color);
+        c.drawRoundRect(barLeft, barTop, barLeft + (barRight - barLeft) * value,
+                barTop + barH, barH, barH, paint);
+    }
+
+    private void drawCards(Canvas c, int w, int h) {
+        float y = h * 0.735f;
+        float cardH = h * 0.115f;
+        float gap = w * 0.025f;
+        float margin = w * 0.055f;
+        float cardW = (w - margin * 2f - gap * 2f) / 3f;
+
+        syncRect.set(margin, y, margin + cardW, y + cardH);
+        offlineRect.set(syncRect.right + gap, y, syncRect.right + gap + cardW, y + cardH);
+        errorRect.set(offlineRect.right + gap, y, offlineRect.right + gap + cardW, y + cardH);
+
+        drawActionCard(c, syncRect, "↻", "SYNC", "Erfolg", Color.rgb(106, 205, 92));
+        drawActionCard(c, offlineRect, "⌁", "OFFLINE", "Verwirrt", Color.rgb(55, 151, 245));
+        drawActionCard(c, errorRect, "!", "FEHLER", "Traurig", Color.rgb(255, 92, 102));
+    }
+
+    private void drawActionCard(Canvas c, RectF r, String icon, String title, String sub, int color) {
+        paint.setColor(0xF4FFFFFF);
+        paint.setShadowLayer(14f, 0f, 7f, 0x1E6C334A);
+        c.drawRoundRect(r, 28f, 28f, paint);
+        paint.clearShadowLayer();
+
+        float cx = r.centerX();
+        float iconY = r.top + r.height() * 0.30f;
+        float radius = r.width() * 0.18f;
+        paint.setColor(color);
+        c.drawCircle(cx, iconY, radius, paint);
+
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        textPaint.setTextSize(r.width() * 0.22f);
+        textPaint.setColor(Color.WHITE);
+        c.drawText(icon, cx, iconY + r.width() * 0.075f, textPaint);
+
+        textPaint.setTextSize(r.width() * 0.105f);
+        textPaint.setColor(Color.rgb(75, 37, 53));
+        c.drawText(title, cx, r.top + r.height() * 0.68f, textPaint);
+
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        textPaint.setTextSize(r.width() * 0.075f);
+        textPaint.setColor(Color.rgb(96, 74, 83));
+        c.drawText(sub, cx, r.top + r.height() * 0.86f, textPaint);
+    }
+
+    private void drawHint(Canvas c, int w, int h) {
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        textPaint.setTextSize(w * 0.025f);
+        textPaint.setColor(0xAA7E5969);
+        c.drawText("Tippen: winken  •  Doppeltippen: freuen  •  Halten: schlafen",
+                w / 2f, h * 0.885f, textPaint);
+    }
+
+    private void drawBottomNav(Canvas c, int w, int h) {
+        float left = w * 0.04f;
+        float top = h * 0.91f;
+        float right = w * 0.96f;
+        float bottom = h * 0.987f;
+
+        paint.setColor(0xF1FFFFFF);
+        paint.setShadowLayer(15f, 0, -2f, 0x146C334A);
+        c.drawRoundRect(left, top, right, bottom, 34f, 34f, paint);
+        paint.clearShadowLayer();
+
+        String[] icons = {"⌂", "♥", "●", "⚙"};
+        String[] labels = {"Milo", "Stimmung", "Aktionen", "Einstellungen"};
+        for (int i = 0; i < 4; i++) {
+            float x = left + (i + 0.5f) * ((right - left) / 4f);
+            boolean active = i == 0;
+            int color = active ? Color.rgb(243, 70, 137) : Color.rgb(145, 132, 140);
+
+            textPaint.setTextAlign(Paint.Align.CENTER);
+            textPaint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+            textPaint.setTextSize(w * 0.042f);
+            textPaint.setColor(color);
+            c.drawText(icons[i], x, top + (bottom - top) * 0.38f, textPaint);
+
+            textPaint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            textPaint.setTextSize(w * 0.022f);
+            c.drawText(labels[i], x, top + (bottom - top) * 0.72f, textPaint);
         }
 
-        if (mood == Mood.JOY || mood == Mood.HAPPY || mood == Mood.WAVE || mood == Mood.HOP) {
-            paint.setColor(Color.rgb(104, 25, 58));
-            c.drawOval(new RectF(-46, 0, 46, 66), paint);
-            paint.setColor(Color.WHITE);
-            c.drawOval(new RectF(-21, 4, -1, 24), paint);
-            paint.setColor(Color.rgb(255, 113, 157));
-            c.drawOval(new RectF(-21, 39, 25, 63), paint);
-        } else {
-            c.drawArc(new RectF(-40, -1, 40, 42), 25, 130, false, strokePaint);
-        }
+        paint.setColor(Color.rgb(243, 70, 137));
+        float tabW = (right - left) / 4f;
+        c.drawRoundRect(left + tabW * 0.30f, bottom - 7f,
+                left + tabW * 0.70f, bottom - 3f, 6f, 6f, paint);
     }
 
     private String statusText() {
         switch (mood) {
-            case SLEEP:
-                return "Pssst … Milo schläft";
-            case SAD:
-                return "Milo braucht gerade etwas Nähe";
+            case BLINK:
+                return "Hallo! ♥";
             case CURIOUS:
                 return "Was ist denn da?";
-            case SNIFF:
-                return "Schnupper, schnupper …";
             case JOY:
-                return "Juhu!";
-            case WAVE:
-                return "Hallo!";
-            case HAPPY:
-                return "Schön, dass du da bist";
-            case SIT:
-                return "Ich setz mich kurz zu dir";
-            case LIE:
-                return "Milo wird langsam müde";
+                return "Freut sich!";
+            case SLEEP:
+                return "Schläft ganz friedlich …";
+            case SAD:
+                return "Oh … da stimmt etwas nicht";
             default:
                 return "Süß. Lebendig. Immer für dich da.";
         }
     }
 
-    private void drawMeter(Canvas c, String label, float value, float x, float y, float width) {
-        textPaint.setTextAlign(Paint.Align.LEFT);
-        textPaint.setTextSize(getWidth() * 0.028f);
-        textPaint.setColor(Color.rgb(93, 68, 79));
-        c.drawText(label, x, y - 8, textPaint);
-
-        paint.setColor(Color.rgb(242, 220, 228));
-        c.drawRoundRect(x, y, x + width, y + 12, 10, 10, paint);
-
-        paint.setColor(Color.rgb(239, 104, 151));
-        c.drawRoundRect(x, y, x + width * value, y + 12, 10, 10, paint);
-
-        textPaint.setTextAlign(Paint.Align.CENTER);
-    }
-
-    private void drawChip(Canvas c, int index, String top, String bottom) {
-        float w = getWidth();
-        float chipW = w * 0.27f;
-        float gap = w * 0.025f;
-        float x = w * 0.07f + index * (chipW + gap);
-        float y = getHeight() * 0.835f;
-
-        chipPaint.setColor(Color.WHITE);
-        chipPaint.setShadowLayer(14, 0, 5, 0x22000000);
-        c.drawRoundRect(x, y, x + chipW, y + getHeight() * 0.085f, 24, 24, chipPaint);
-        chipPaint.clearShadowLayer();
-
-        textPaint.setTextAlign(Paint.Align.CENTER);
-        textPaint.setTextSize(w * 0.027f);
-        textPaint.setColor(Color.rgb(222, 66, 121));
-        c.drawText(top, x + chipW / 2f, y + getHeight() * 0.034f, textPaint);
-
-        textPaint.setTextSize(w * 0.021f);
-        textPaint.setColor(Color.rgb(104, 80, 90));
-        c.drawText(bottom, x + chipW / 2f, y + getHeight() * 0.064f, textPaint);
+    private void drawSparkle(Canvas c, float x, float y, float r) {
+        paint.setColor(0xBFFFFFFF);
+        Path p = new Path();
+        p.moveTo(x, y - r);
+        p.lineTo(x + r * 0.22f, y - r * 0.22f);
+        p.lineTo(x + r, y);
+        p.lineTo(x + r * 0.22f, y + r * 0.22f);
+        p.lineTo(x, y + r);
+        p.lineTo(x - r * 0.22f, y + r * 0.22f);
+        p.lineTo(x - r, y);
+        p.lineTo(x - r * 0.22f, y - r * 0.22f);
+        p.close();
+        c.drawPath(p, paint);
     }
 
     private void drawHeart(Canvas c, float x, float y, float s, float alpha) {
-        paint.setColor(Color.argb((int) (220 * alpha), 244, 92, 145));
+        paint.setColor(Color.argb((int) (235 * alpha), 244, 80, 139));
         Path p = new Path();
-        p.moveTo(x, y + s * 0.35f);
-        p.cubicTo(x - s, y - s * 0.25f, x - s * 0.8f, y - s, x, y - s * 0.45f);
-        p.cubicTo(x + s * 0.8f, y - s, x + s, y - s * 0.25f, x, y + s * 0.35f);
+        p.moveTo(x, y + s * 0.40f);
+        p.cubicTo(x - s, y - s * 0.25f, x - s * 0.78f, y - s, x, y - s * 0.42f);
+        p.cubicTo(x + s * 0.78f, y - s, x + s, y - s * 0.25f, x, y + s * 0.40f);
         c.drawPath(p, paint);
     }
 
     private void burstHearts(float x, float y, int count) {
         for (int i = 0; i < count; i++) {
+            float size = 10f + random.nextFloat() * 17f;
+            float dx = (random.nextFloat() - 0.5f) * 1.9f;
             hearts.add(new Heart(
-                    x + (random.nextFloat() - 0.5f) * 120,
-                    y + (random.nextFloat() - 0.5f) * 50,
-                    10 + random.nextFloat() * 18
+                    x + (random.nextFloat() - 0.5f) * 100f,
+                    y + (random.nextFloat() - 0.5f) * 50f,
+                    size,
+                    dx
             ));
         }
     }
 
     @SuppressWarnings("deprecation")
     private void vibrate(long ms) {
-        android.os.Vibrator vibrator =
+        android.os.Vibrator v =
                 (android.os.Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-
-        if (vibrator != null) {
-            if (Build.VERSION.SDK_INT >= 26) {
-                vibrator.vibrate(VibrationEffect.createOneShot(ms, 70));
-            } else {
-                vibrator.vibrate(ms);
-            }
+        if (v == null) return;
+        if (Build.VERSION.SDK_INT >= 26) {
+            v.vibrate(VibrationEffect.createOneShot(ms, 65));
+        } else {
+            v.vibrate(ms);
         }
     }
 
@@ -561,52 +551,43 @@ public class MiloView extends View {
     public boolean onTouchEvent(MotionEvent e) {
         gestures.onTouchEvent(e);
 
-        pointerX = Math.max(0f, Math.min(1f, e.getX() / getWidth()));
-        pointerY = Math.max(0f, Math.min(1f, e.getY() / getHeight()));
+        if (getWidth() > 0 && getHeight() > 0) {
+            pointerX = Math.max(0f, Math.min(1f, e.getX() / getWidth()));
+            pointerY = Math.max(0f, Math.min(1f, e.getY() / getHeight()));
+        }
 
-        if (e.getAction() == MotionEvent.ACTION_DOWN || e.getAction() == MotionEvent.ACTION_MOVE) {
+        if (e.getAction() == MotionEvent.ACTION_DOWN ||
+                e.getAction() == MotionEvent.ACTION_MOVE) {
             touching = true;
             interact();
-            if (mood == Mood.IDLE) {
-                setMood(Mood.CURIOUS, 350);
-            }
-        } else if (e.getAction() == MotionEvent.ACTION_UP || e.getAction() == MotionEvent.ACTION_CANCEL) {
+        } else if (e.getAction() == MotionEvent.ACTION_UP ||
+                e.getAction() == MotionEvent.ACTION_CANCEL) {
             touching = false;
-        }
 
-        if (e.getAction() == MotionEvent.ACTION_UP
-                && e.getY() > getHeight() * 0.82f
-                && e.getY() < getHeight() * 0.94f) {
-            handleChipTap(e.getX());
+            if (syncRect.contains(e.getX(), e.getY())) {
+                setMood(Mood.JOY, 2100);
+                burstHearts(miloRect.centerX(), miloRect.centerY(), 10);
+                joy = Math.min(1f, joy + 0.10f);
+                speaker.say("Alles synchronisiert!");
+                vibrate(45);
+            } else if (offlineRect.contains(e.getX(), e.getY())) {
+                setMood(Mood.CURIOUS, 2500);
+                speaker.say("Hm, gerade bin ich offline.");
+                curiosity = 1f;
+                vibrate(24);
+            } else if (errorRect.contains(e.getX(), e.getY())) {
+                setMood(Mood.SAD, 2800);
+                speaker.say("Oh oh. Da ist etwas schiefgelaufen.");
+                joy = Math.max(0.35f, joy - 0.12f);
+                vibrate(35);
+            }
         }
-
         return true;
     }
 
-    private void handleChipTap(float x) {
-        float w = getWidth();
-        float chipW = w * 0.27f;
-        float gap = w * 0.025f;
-        float startX = w * 0.07f;
-
-        for (int i = 0; i < 3; i++) {
-            float left = startX + i * (chipW + gap);
-            float right = left + chipW;
-
-            if (x >= left && x <= right) {
-                if (i == 0) {
-                    setMood(Mood.JOY, 1800);
-                    burstHearts(w / 2f, getHeight() * 0.42f, 10);
-                    speaker.say("Alles synchronisiert!");
-                } else if (i == 1) {
-                    setMood(Mood.CURIOUS, 2200);
-                    speaker.say("Hm, gerade bin ich offline.");
-                } else {
-                    setMood(Mood.SAD, 2500);
-                    speaker.say("Oh oh. Da ist etwas schiefgelaufen.");
-                }
-                break;
-            }
-        }
+    @Override
+    protected void onDetachedFromWindow() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDetachedFromWindow();
     }
 }
